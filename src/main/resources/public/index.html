@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Waypoint - Rajalakshmi Engineering College</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,500,700">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body class="has-tabs">
+
+    <header class="app-bar">
+        <span class="title"><a href="/">Waypoint</a></span>
+        <span class="subtitle">Rajalakshmi Engineering College</span>
+        <span class="spacer"></span>
+        <input type="text" class="search-input" id="search-input" placeholder="Search posts" autocomplete="off">
+        <button class="icon-btn" id="search-btn" aria-label="Search">
+            <svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor">
+                <path
+                    d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z" />
+            </svg>
+        </button>
+        <span id="auth-area"></span>
+    </header>
+
+    <nav class="tabs-bar">
+        <div class="tabs-inner" id="tabs-inner">
+            <button class="tab" data-board="">All</button>
+            <button class="tab" data-board="DISCUSSION">Discussion</button>
+            <button class="tab" data-board="STUDY_MATERIAL">Study material</button>
+            <button class="tab" data-board="QUERY">Queries</button>
+            <a class="tab" href="/directory.html">Directory</a>
+            <span class="tab-indicator" id="tab-indicator"></span>
+        </div>
+    </nav>
+
+    <main>
+        <div class="search-info" id="search-info" hidden></div>
+        <div class="sort-row" id="sort-row">
+            <span>Sort by</span>
+            <button class="btn-flat on-surface small" data-sort="top">Most helpful</button>
+            <button class="btn-flat on-surface small" data-sort="new">Latest</button>
+        </div>
+        <div id="feed"></div>
+    </main>
+
+    <button class="fab visible" id="fab" title="New post">+</button>
+
+    <!-- New post dialog -->
+    <div class="scrim" id="post-scrim">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="post-dialog-title">
+            <h2 class="dialog-title" id="post-dialog-title">New post</h2>
+            <form id="post-form" novalidate>
+                <div class="field">
+                    <label for="p-board">Section</label>
+                    <select id="p-board">
+                        <option value="DISCUSSION">Discussion</option>
+                        <option value="STUDY_MATERIAL">Study material</option>
+                        <option value="QUERY">Query</option>
+                    </select>
+                </div>
+                <div class="field">
+                    <label for="p-title">Title</label>
+                    <input type="text" id="p-title" maxlength="200">
+                </div>
+                <div class="field">
+                    <label for="p-body">Text (optional)</label>
+                    <textarea id="p-body" maxlength="10000"></textarea>
+                </div>
+                <div class="field">
+                    <label for="p-link">Link (optional, starting with https://)</label>
+                    <input type="text" id="p-link" maxlength="500">
+                </div>
+                <div class="form-error" id="post-error"></div>
+                <div class="dialog-actions">
+                    <button type="button" class="btn-flat on-surface" id="post-cancel-btn">Cancel</button>
+                    <button type="submit" class="btn-flat on-surface">Post</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete confirmation dialog -->
+    <div class="scrim" id="confirm-scrim">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <h2 class="dialog-title" id="confirm-title">Delete post?</h2>
+            <p class="dialog-text" id="confirm-text"></p>
+            <div class="dialog-actions">
+                <button type="button" class="btn-flat on-surface" id="confirm-cancel-btn">Cancel</button>
+                <button type="button" class="btn-flat danger" id="confirm-delete-btn">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="snackbar" id="snackbar"></div>
+
+    <script src="/motion.js"></script>
+    <script src="/auth.js"></script>
+    <script>
+        const feedEl = document.getElementById('feed');
+        const searchInput = document.getElementById('search-input');
+        const searchInfo = document.getElementById('search-info');
+        const sortRow = document.getElementById('sort-row');
+        const postScrim = document.getElementById('post-scrim');
+        const confirmScrim = document.getElementById('confirm-scrim');
+
+        const BOARD_LABELS = { DISCUSSION: 'Discussion', STUDY_MATERIAL: 'Study material', QUERY: 'Query' };
+        const VALID_BOARDS = ['', 'DISCUSSION', 'STUDY_MATERIAL', 'QUERY'];
+
+        const ICON_UP = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 14l5-5 5 5z"/></svg>';
+        const ICON_DOWN = '<svg viewBox="0 0 24 24" width="24" height="24" fill="currentColor"><path d="M7 10l5 5 5-5z"/></svg>';
+
+        const state = { board: '', sort: 'top', query: '' };
+        let postsById = {};
+        let deletingPostId = null;
+
+        // ---------- Small helpers ----------
+
+        function escapeHtml(text) {
+            return String(text == null ? '' : text)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function timeAgo(seconds) {
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return Math.floor(seconds / 60) + ' min ago';
+            if (seconds < 86400) return Math.floor(seconds / 3600) + ' h ago';
+            return Math.floor(seconds / 86400) + ' d ago';
+        }
+
+        function isLoggedIn() { return !!window.currentUser; }
+        function isAdmin() { return window.currentUser && window.currentUser.role === 'ADMIN'; }
+
+        let snackTimer;
+        function showSnackbar(message) {
+            const el = document.getElementById('snackbar');
+            el.textContent = message;
+            el.classList.add('show');
+            clearTimeout(snackTimer);
+            snackTimer = setTimeout(() => el.classList.remove('show'), 3000);
+        }
+
+        async function sendJson(url, method, payload) {
+            const options = { method: method, headers: { 'Content-Type': 'application/json' } };
+            if (payload !== undefined) options.body = JSON.stringify(payload);
+            const response = await fetch(url, options);
+            const data = await response.json();
+            return { ok: response.ok, data: data };
+        }
+
+        // ---------- Tabs and sort buttons ----------
+
+        function updateTabs() {
+            document.querySelectorAll('.tab[data-board]').forEach(tab => {
+                tab.classList.toggle('active', tab.dataset.board === state.board);
+            });
+            const active = document.querySelector('.tab.active');
+            const indicator = document.getElementById('tab-indicator');
+            if (active) {
+                indicator.style.left = active.offsetLeft + 'px';
+                indicator.style.width = active.offsetWidth + 'px';
+            }
+        }
+
+        function updateSortButtons() {
+            sortRow.querySelectorAll('button[data-sort]').forEach(btn => {
+                btn.classList.toggle('selected', btn.dataset.sort === state.sort);
+            });
+        }
+
+        document.getElementById('tabs-inner').addEventListener('click', (event) => {
+            const tab = event.target.closest('.tab[data-board]');
+            if (!tab) return;
+            state.board = tab.dataset.board;
+            updateTabs();
+            history.replaceState(null, '', state.board ? '/?board=' + state.board : '/');
+            loadFeed();
+        });
+
+        sortRow.addEventListener('click', (event) => {
+            const btn = event.target.closest('button[data-sort]');
+            if (!btn) return;
+            state.sort = btn.dataset.sort;
+            updateSortButtons();
+            loadFeed();
+        });
+
+        window.addEventListener('resize', updateTabs);
+        window.addEventListener('load', updateTabs);
+
+        // ---------- Loading the feed ----------
+
+        async function loadFeed() {
+            const params = new URLSearchParams();
+            if (state.board) params.set('board', state.board);
+
+            try {
+                if (state.query) {
+                    params.set('q', state.query);
+                    const response = await fetch('/api/search?' + params.toString());
+                    if (!response.ok) throw new Error('Server returned ' + response.status);
+                    const result = await response.json();
+                    showSearchInfo(result);
+                    renderPosts(result.posts);
+                } else {
+                    params.set('sort', state.sort);
+                    const response = await fetch('/api/posts?' + params.toString());
+                    if (!response.ok) throw new Error('Server returned ' + response.status);
+                    hideSearchInfo();
+                    renderPosts(await response.json());
+                }
+            } catch (err) {
+                feedEl.innerHTML = '<div class="error">Could not load posts: ' + escapeHtml(err.message) + '</div>';
+            }
+        }
+
+        function showSearchInfo(result) {
+            let text;
+            if (result.interpretedAs) {
+                text = 'Showing results for <strong>' + escapeHtml(result.interpretedAs)
+                    + '</strong> (you typed "' + escapeHtml(result.query) + '")';
+            } else {
+                const n = result.posts.length;
+                text = n + ' result' + (n === 1 ? '' : 's') + ' for "' + escapeHtml(result.query) + '"';
+            }
+            searchInfo.innerHTML = '<span>' + text + '</span>'
+                + '<button class="btn-flat on-surface small" data-action="clear-search">Clear</button>';
+            searchInfo.hidden = false;
+            sortRow.hidden = true;
+        }
+
+        function hideSearchInfo() {
+            searchInfo.hidden = true;
+            sortRow.hidden = false;
+        }
+
+        // ---------- Drawing posts ----------
+
+        function postHtml(p, index) {
+            const me = window.currentUser;
+            const canDelete = me && (me.role === 'ADMIN' || me.id === p.userId);
+            const delay = Math.min(index, 8) * 45;
+
+            let html = '<article class="card post" data-id="' + p.id + '" style="animation-delay:' + delay + 'ms">';
+
+            html += '<div class="post-main" data-action="toggle">';
+            html += '<div class="post-meta"><span class="board-label">' + escapeHtml(BOARD_LABELS[p.board] || p.board)
+                + '</span> &middot; ' + escapeHtml(p.author) + ' &middot; ' + timeAgo(p.ageSeconds) + '</div>';
+            html += '<h2 class="post-title">' + escapeHtml(p.title) + '</h2>';
+            if (p.body) html += '<div class="post-body">' + escapeHtml(p.body) + '</div>';
+            html += '</div>';
+
+            html += '<div class="post-actions">';
+            html += '<div class="vote-group">';
+            html += '<button class="vote-btn' + (p.myVote === 1 ? ' active' : '') + '" data-action="vote" data-value="1" data-id="' + p.id + '" aria-label="Upvote">' + ICON_UP + '</button>';
+            html += '<span class="score">' + p.score + '</span>';
+            html += '<button class="vote-btn' + (p.myVote === -1 ? ' active' : '') + '" data-action="vote" data-value="-1" data-id="' + p.id + '" aria-label="Downvote">' + ICON_DOWN + '</button>';
+            html += '</div>';
+            html += '<button class="btn-flat on-surface small" data-action="comments" data-id="' + p.id + '">Comments (' + p.commentCount + ')</button>';
+            if (p.linkUrl) {
+                html += '<a class="btn-flat on-surface small" href="' + escapeHtml(p.linkUrl) + '" target="_blank" rel="noopener noreferrer">Open link</a>';
+            }
+            html += '<span class="spacer"></span>';
+            if (canDelete) {
+                html += '<button class="btn-flat danger small" data-action="delete-post" data-id="' + p.id + '">Delete</button>';
+            }
+            html += '</div>';
+
+            html += '<div class="comments" id="comments-' + p.id + '" hidden></div>';
+            html += '</article>';
+            return html;
+        }
+
+        function renderPosts(posts) {
+            postsById = {};
+            posts.forEach(p => { postsById[p.id] = p; });
+
+            if (posts.length === 0) {
+                feedEl.innerHTML = '<div class="empty">'
+                    + (state.query ? 'No posts match your search.' : 'No posts here yet. Press + to write the first one.')
+                    + '</div>';
+                return;
+            }
+            feedEl.innerHTML = posts.map((p, i) => postHtml(p, i)).join('');
+        }
+
+        // ---------- Voting ----------
+
+        async function vote(id, value) {
+            if (!isLoggedIn()) { showSnackbar('Log in to vote'); return; }
+            const post = postsById[id];
+            if (!post) return;
+            const newValue = post.myVote === value ? 0 : value;   // pressing the same arrow again removes the vote
+
+            try {
+                const result = await sendJson('/api/posts/' + id + '/vote', 'POST', { value: newValue });
+                if (!result.ok) { showSnackbar(result.data.error || 'Could not vote'); return; }
+                postsById[id] = result.data;
+                updateVoteUi(result.data);
+            } catch (err) {
+                showSnackbar('Could not reach the server');
+            }
+        }
+
+        // Update the numbers in place so the cards do not jump around while you vote
+        function updateVoteUi(p) {
+            const card = feedEl.querySelector('.post[data-id="' + p.id + '"]');
+            if (!card) return;
+            card.querySelector('.score').textContent = p.score;
+            card.querySelectorAll('.vote-btn').forEach(btn => {
+                const v = Number(btn.dataset.value);
+                btn.classList.toggle('active', p.myVote === v);
+                btn.classList.remove('pop');
+                if (p.myVote !== 0 && v === p.myVote) {
+                    void btn.offsetWidth;          // lets the animation restart
+                    btn.classList.add('pop');
+                }
+            });
+        }
+
+        // ---------- Comments ----------
+
+        async function toggleComments(id) {
+            const panel = document.getElementById('comments-' + id);
+            if (!panel.hidden) { panel.hidden = true; return; }
+            panel.hidden = false;
+            panel.innerHTML = '<div class="comment-empty">Loading...</div>';
+            await loadComments(id);
+        }
+
+        async function loadComments(id) {
+            const panel = document.getElementById('comments-' + id);
+            try {
+                const response = await fetch('/api/posts/' + id + '/comments');
+                if (!response.ok) throw new Error('Server returned ' + response.status);
+                const comments = await response.json();
+                renderComments(id, comments);
+                const btn = feedEl.querySelector('.post[data-id="' + id + '"] [data-action="comments"]');
+                if (btn) btn.textContent = 'Comments (' + comments.length + ')';
+            } catch (err) {
+                panel.innerHTML = '<div class="comment-empty">Could not load comments</div>';
+            }
+        }
+
+        function renderComments(id, comments) {
+            const me = window.currentUser;
+            let html = '';
+
+            if (comments.length === 0) {
+                html += '<div class="comment-empty">No comments yet.</div>';
+            }
+            comments.forEach(c => {
+                const canDelete = me && (me.role === 'ADMIN' || me.id === c.userId);
+                html += '<div class="comment"><div class="comment-meta"><strong>' + escapeHtml(c.author) + '</strong>'
+                    + '<span>' + timeAgo(c.ageSeconds) + '</span>';
+                if (canDelete) {
+                    html += '<button class="btn-flat danger small" data-action="delete-comment" data-id="' + id
+                        + '" data-comment-id="' + c.id + '">Delete</button>';
+                }
+                html += '</div><div class="comment-body">' + escapeHtml(c.body) + '</div></div>';
+            });
+
+            if (me) {
+                html += '<div class="comment-form"><div class="field">'
+                    + '<input type="text" class="comment-input" data-id="' + id + '" placeholder="Add a comment" maxlength="2000" autocomplete="off">'
+                    + '</div><button class="btn-flat on-surface small" data-action="add-comment" data-id="' + id + '">Post</button></div>';
+            } else {
+                html += '<div class="comment-empty"><a href="/login.html">Log in</a> to comment.</div>';
+            }
+            document.getElementById('comments-' + id).innerHTML = html;
+        }
+
+        async function addComment(id) {
+            const input = document.querySelector('#comments-' + id + ' .comment-input');
+            if (!input) return;
+            const text = input.value.trim();
+            if (!text) return;
+            try {
+                const result = await sendJson('/api/posts/' + id + '/comments', 'POST', { body: text });
+                if (!result.ok) { showSnackbar(result.data.error || 'Could not post comment'); return; }
+                await loadComments(id);
+            } catch (err) {
+                showSnackbar('Could not reach the server');
+            }
+        }
+
+        async function deleteComment(postId, commentId) {
+            try {
+                const result = await sendJson('/api/comments/' + commentId, 'DELETE');
+                if (!result.ok) { showSnackbar(result.data.error || 'Could not delete comment'); return; }
+                await loadComments(postId);
+            } catch (err) {
+                showSnackbar('Could not reach the server');
+            }
+        }
+
+        // ---------- One click listener for everything inside the feed ----------
+
+        feedEl.addEventListener('click', (event) => {
+            const el = event.target.closest('[data-action]');
+            if (!el) return;
+            const id = el.dataset.id;
+
+            switch (el.dataset.action) {
+                case 'toggle':
+                    el.closest('.post').classList.toggle('expanded');
+                    break;
+                case 'vote':
+                    vote(id, Number(el.dataset.value));
+                    break;
+                case 'comments':
+                    toggleComments(id);
+                    break;
+                case 'add-comment':
+                    addComment(id);
+                    break;
+                case 'delete-comment':
+                    deleteComment(id, el.dataset.commentId);
+                    break;
+                case 'delete-post':
+                    openConfirm(id);
+                    break;
+            }
+        });
+
+        // Pressing Enter in a comment box posts the comment
+        feedEl.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' && event.target.classList.contains('comment-input')) {
+                event.preventDefault();
+                addComment(event.target.dataset.id);
+            }
+        });
+
+        // ---------- Search ----------
+
+        let searchTimer;
+
+        function runSearch() {
+            state.query = searchInput.value.trim();
+            loadFeed();
+        }
+
+        function clearSearch() {
+            searchInput.value = '';
+            state.query = '';
+            searchInput.classList.remove('open');
+            searchInput.blur();
+            loadFeed();
+        }
+
+        document.getElementById('search-btn').addEventListener('click', () => {
+            if (searchInput.classList.contains('open') && searchInput.value.trim()) {
+                runSearch();
+            } else {
+                searchInput.classList.add('open');
+                searchInput.focus();
+            }
+        });
+
+        searchInput.addEventListener('input', () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(runSearch, 350);      // wait until the typing pauses
+        });
+
+        searchInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') { clearTimeout(searchTimer); runSearch(); }
+            if (event.key === 'Escape') clearSearch();
+        });
+
+        searchInput.addEventListener('blur', () => {
+            if (!searchInput.value.trim()) searchInput.classList.remove('open');
+        });
+
+        searchInfo.addEventListener('click', (event) => {
+            if (event.target.closest('[data-action="clear-search"]')) clearSearch();
+        });
+
+        // ---------- New post dialog ----------
+
+        function openPostDialog() {
+            if (!isLoggedIn()) { window.location.href = '/login.html'; return; }
+            document.getElementById('p-board').value = state.board || 'DISCUSSION';
+            document.getElementById('p-title').value = '';
+            document.getElementById('p-body').value = '';
+            document.getElementById('p-link').value = '';
+            document.getElementById('post-error').textContent = '';
+            postScrim.classList.add('open');
+            document.getElementById('p-title').focus();
+        }
+
+        function closePostDialog() { postScrim.classList.remove('open'); }
+
+        document.getElementById('fab').addEventListener('click', openPostDialog);
+        document.getElementById('post-cancel-btn').addEventListener('click', closePostDialog);
+
+        document.getElementById('post-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const errorEl = document.getElementById('post-error');
+            errorEl.textContent = '';
+
+            const payload = {
+                board: document.getElementById('p-board').value,
+                title: document.getElementById('p-title').value,
+                body: document.getElementById('p-body').value,
+                linkUrl: document.getElementById('p-link').value
+            };
+
+            try {
+                const result = await sendJson('/api/posts', 'POST', payload);
+                if (!result.ok) { errorEl.textContent = result.data.error || 'Something went wrong'; return; }
+
+                closePostDialog();
+                // Show the new post: leave any search, and switch tab if it was posted to another section
+                searchInput.value = '';
+                state.query = '';
+                searchInput.classList.remove('open');
+                if (state.board && state.board !== payload.board) {
+                    state.board = payload.board;
+                    updateTabs();
+                }
+                loadFeed();
+                showSnackbar('Posted');
+            } catch (err) {
+                errorEl.textContent = 'Could not reach the server';
+            }
+        });
+
+        // ---------- Delete post dialog ----------
+
+        function openConfirm(id) {
+            const post = postsById[id];
+            if (!post) return;
+            deletingPostId = id;
+            document.getElementById('confirm-text').textContent =
+                'Delete "' + post.title + '" along with its comments and votes? This cannot be undone.';
+            confirmScrim.classList.add('open');
+        }
+
+        function closeConfirm() { confirmScrim.classList.remove('open'); }
+
+        document.getElementById('confirm-cancel-btn').addEventListener('click', closeConfirm);
+
+        document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
+            try {
+                const result = await sendJson('/api/posts/' + deletingPostId, 'DELETE');
+                closeConfirm();
+                if (!result.ok) { showSnackbar(result.data.error || 'Could not delete'); return; }
+                showSnackbar('Post deleted');
+                loadFeed();
+            } catch (err) {
+                closeConfirm();
+                showSnackbar('Could not reach the server');
+            }
+        });
+
+        // Clicking the dark area outside a dialog closes it; so does the Escape key
+        postScrim.addEventListener('click', (e) => { if (e.target === postScrim) closePostDialog(); });
+        confirmScrim.addEventListener('click', (e) => { if (e.target === confirmScrim) closeConfirm(); });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { closePostDialog(); closeConfirm(); }
+        });
+
+        // ---------- Start ----------
+
+        const requestedBoard = new URLSearchParams(window.location.search).get('board') || '';
+        if (VALID_BOARDS.includes(requestedBoard)) state.board = requestedBoard;
+
+        loadAuth().then(() => {
+            updateTabs();
+            updateSortButtons();
+            loadFeed();
+        });
+    </script>
+</body>
+
+</html>

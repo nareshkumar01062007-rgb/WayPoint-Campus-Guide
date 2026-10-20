@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Issues - Waypoint</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,500,700">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body class="has-tabs">
+
+    <header class="app-bar">
+        <span class="title"><a href="/">Waypoint</a></span>
+        <span class="subtitle">Rajalakshmi Engineering College</span>
+        <span class="spacer"></span>
+        <span id="auth-area"></span>
+    </header>
+
+    <nav class="tabs-bar static">
+        <div class="tabs-inner">
+            <a class="tab" href="/">All</a>
+            <a class="tab" href="/?board=DISCUSSION">Discussion</a>
+            <a class="tab" href="/?board=STUDY_MATERIAL">Study material</a>
+            <a class="tab" href="/?board=QUERY">Queries</a>
+            <a class="tab active" href="/issues.html">Issues</a>
+            <a class="tab" href="/issues.html">Issues</a>
+            <a class="tab" href="/directory.html">Directory</a>
+        </div>
+    </nav>
+
+    <main>
+        <h1 class="page-title">Campus Issues</h1>
+        <p class="page-sub">Report problems at a location, such as a broken projector or a locked room, and follow their
+            progress.</p>
+
+        <div class="sort-row" id="filters">
+            <span>Show</span>
+            <button class="btn-flat on-surface small" data-status="">All</button>
+            <button class="btn-flat on-surface small" data-status="OPEN">Open</button>
+            <button class="btn-flat on-surface small" data-status="ACKNOWLEDGED">Acknowledged</button>
+            <button class="btn-flat on-surface small" data-status="IN_PROGRESS">In progress</button>
+            <button class="btn-flat on-surface small" data-status="RESOLVED">Resolved</button>
+        </div>
+
+        <div id="list"></div>
+    </main>
+
+    <button class="fab visible" id="fab" title="Report an issue">+</button>
+
+    <!-- Report dialog -->
+    <div class="scrim" id="report-scrim">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="report-title">
+            <h2 class="dialog-title" id="report-title">Report an issue</h2>
+            <form id="report-form" novalidate>
+                <div class="field">
+                    <label for="r-location">Location</label>
+                    <select id="r-location"></select>
+                </div>
+                <div class="field">
+                    <label for="r-title">Title</label>
+                    <input type="text" id="r-title" maxlength="150">
+                </div>
+                <div class="field">
+                    <label for="r-desc">What is wrong?</label>
+                    <textarea id="r-desc" maxlength="5000"></textarea>
+                </div>
+                <div class="form-error" id="report-error"></div>
+                <div class="dialog-actions">
+                    <button type="button" class="btn-flat on-surface" id="report-cancel-btn">Cancel</button>
+                    <button type="submit" class="btn-flat on-surface">Submit</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Delete confirmation dialog -->
+    <div class="scrim" id="confirm-scrim">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+            <h2 class="dialog-title" id="confirm-title">Delete report?</h2>
+            <p class="dialog-text" id="confirm-text"></p>
+            <div class="dialog-actions">
+                <button type="button" class="btn-flat on-surface" id="confirm-cancel-btn">Cancel</button>
+                <button type="button" class="btn-flat danger" id="confirm-delete-btn">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="snackbar" id="snackbar"></div>
+
+    <script src="/motion.js"></script>
+    <script src="/auth.js"></script>
+    <script>
+        const listEl = document.getElementById('list');
+        const reportScrim = document.getElementById('report-scrim');
+        const confirmScrim = document.getElementById('confirm-scrim');
+
+        const STATUS_LABELS = {
+            OPEN: 'Open',
+            ACKNOWLEDGED: 'Acknowledged',
+            IN_PROGRESS: 'In progress',
+            RESOLVED: 'Resolved'
+        };
+
+        let statusFilter = '';
+        let issuesById = {};
+        let deletingId = null;
+        let locationsLoaded = false;
+
+        function escapeHtml(text) {
+            return String(text == null ? '' : text)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
+
+        function timeAgo(seconds) {
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return Math.floor(seconds / 60) + ' min ago';
+            if (seconds < 86400) return Math.floor(seconds / 3600) + ' h ago';
+            return Math.floor(seconds / 86400) + ' d ago';
+        }
+
+        function isLoggedIn() { return !!window.currentUser; }
+        function isAdmin() { return window.currentUser && window.currentUser.role === 'ADMIN'; }
+
+        let snackTimer;
+        function showSnackbar(message) {
+            const el = document.getElementById('snackbar');
+            el.textContent = message;
+            el.classList.add('show');
+            clearTimeout(snackTimer);
+            snackTimer = setTimeout(() => el.classList.remove('show'), 3000);
+        }
+
+        async function sendJson(url, method, payload) {
+            const options = { method: method, headers: { 'Content-Type': 'application/json' } };
+            if (payload !== undefined) options.body = JSON.stringify(payload);
+            const response = await fetch(url, options);
+            const data = await response.json();
+            return { ok: response.ok, data: data };
+        }
+
+        // ---------- Filter buttons ----------
+
+        function updateFilterButtons() {
+            document.querySelectorAll('#filters button').forEach(btn => {
+                btn.classList.toggle('selected', btn.dataset.status === statusFilter);
+            });
+        }
+
+        document.getElementById('filters').addEventListener('click', (event) => {
+            const btn = event.target.closest('button[data-status]');
+            if (!btn) return;
+            statusFilter = btn.dataset.status;
+            updateFilterButtons();
+            loadIssues();
+        });
+
+        // ---------- Loading and drawing issues ----------
+
+        async function loadIssues() {
+            const url = '/api/issues' + (statusFilter ? '?status=' + statusFilter : '');
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Server returned ' + response.status);
+                render(await response.json());
+            } catch (err) {
+                listEl.innerHTML = '<div class="error">Could not load issues: ' + escapeHtml(err.message) + '</div>';
+            }
+        }
+
+        function statusControl(issue) {
+            if (!isAdmin()) {
+                return '<span class="issue-status">' + escapeHtml(STATUS_LABELS[issue.status]) + '</span>';
+            }
+            let html = '<select class="status-select" data-id="' + issue.id + '" aria-label="Status">';
+            Object.keys(STATUS_LABELS).forEach(key => {
+                html += '<option value="' + key + '"' + (key === issue.status ? ' selected' : '') + '>'
+                    + STATUS_LABELS[key] + '</option>';
+            });
+            return html + '</select>';
+        }
+
+        function render(issues) {
+            issuesById = {};
+            issues.forEach(i => { issuesById[i.id] = i; });
+
+            if (issues.length === 0) {
+                listEl.innerHTML = '<div class="empty">No issues here. Press + to report one.</div>';
+                return;
+            }
+
+            const me = window.currentUser;
+            listEl.innerHTML = issues.map((i, index) => {
+                const canDelete = me && (me.role === 'ADMIN' || me.id === i.userId);
+                const where = i.locationName === i.building ? i.building : i.building + ' \u00b7 ' + i.locationName;
+                const delay = Math.min(index, 8) * 45;
+
+                return '<article class="card post issue' + (i.status === 'RESOLVED' ? ' resolved' : '')
+                    + '" style="animation-delay:' + delay + 'ms">'
+                    + '<div class="issue-main">'
+                    + '<h2 class="issue-title">' + escapeHtml(i.title) + '</h2>'
+                    + '<div class="issue-where">' + escapeHtml(where) + '</div>'
+                    + '<div class="issue-desc">' + escapeHtml(i.description) + '</div>'
+                    + '</div>'
+                    + '<div class="issue-foot">'
+                    + statusControl(i)
+                    + '<span>Reported by ' + escapeHtml(i.author) + ' &middot; ' + timeAgo(i.ageSeconds) + '</span>'
+                    + '<span class="spacer"></span>'
+                    + (canDelete ? '<button class="btn-flat danger small" data-action="delete" data-id="' + i.id + '">Delete</button>' : '')
+                    + '</div></article>';
+            }).join('');
+        }
+
+        // Admin changes a status from the dropdown
+        listEl.addEventListener('change', async (event) => {
+            const select = event.target.closest('.status-select');
+            if (!select) return;
+            try {
+                const result = await sendJson('/api/issues/' + select.dataset.id + '/status', 'PUT', { status: select.value });
+                if (!result.ok) { showSnackbar(result.data.error || 'Could not update'); }
+                else { showSnackbar('Status updated'); }
+                loadIssues();
+            } catch (err) {
+                showSnackbar('Could not reach the server');
+            }
+        });
+
+        listEl.addEventListener('click', (event) => {
+            const btn = event.target.closest('[data-action="delete"]');
+            if (btn) openConfirm(btn.dataset.id);
+        });
+
+        // ---------- Report dialog ----------
+
+        async function loadLocationOptions() {
+            const response = await fetch('/api/locations');
+            if (!response.ok) throw new Error('Could not load locations');
+            const locations = await response.json();
+            document.getElementById('r-location').innerHTML = locations.map(loc => {
+                const label = loc.name === loc.building ? loc.building : loc.building + ' \u00b7 ' + loc.name;
+                return '<option value="' + loc.id + '">' + escapeHtml(label) + '</option>';
+            }).join('');
+            locationsLoaded = true;
+        }
+
+        async function openReportDialog() {
+            if (!isLoggedIn()) { window.location.href = '/login.html'; return; }
+            try {
+                if (!locationsLoaded) await loadLocationOptions();
+            } catch (err) {
+                showSnackbar('Could not load the location list');
+                return;
+            }
+            document.getElementById('r-title').value = '';
+            document.getElementById('r-desc').value = '';
+            document.getElementById('report-error').textContent = '';
+            reportScrim.classList.add('open');
+            document.getElementById('r-title').focus();
+        }
+
+        function closeReportDialog() { reportScrim.classList.remove('open'); }
+
+        document.getElementById('fab').addEventListener('click', openReportDialog);
+        document.getElementById('report-cancel-btn').addEventListener('click', closeReportDialog);
+
+        document.getElementById('report-form').addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const errorEl = document.getElementById('report-error');
+            errorEl.textContent = '';
+
+            const payload = {
+                locationId: Number(document.getElementById('r-location').value),
+                title: document.getElementById('r-title').value,
+                description: document.getElementById('r-desc').value
+            };
+
+            try {
+                const result = await sendJson('/api/issues', 'POST', payload);
+                if (!result.ok) { errorEl.textContent = result.data.error || 'Something went wrong'; return; }
+                closeReportDialog();
+                showSnackbar('Issue reported');
+                statusFilter = '';
+                updateFilterButtons();
+                loadIssues();
+            } catch (err) {
+                errorEl.textContent = 'Could not reach the server';
+            }
+        });
+
+        // ---------- Delete dialog ----------
+
+        function openConfirm(id) {
+            const issue = issuesById[id];
+            if (!issue) return;
+            deletingId = id;
+            document.getElementById('confirm-text').textContent = 'Delete "' + issue.title + '"? This cannot be undone.';
+            confirmScrim.classList.add('open');
+        }
+
+        function closeConfirm() { confirmScrim.classList.remove('open'); }
+
+        document.getElementById('confirm-cancel-btn').addEventListener('click', closeConfirm);
+        document.getElementById('confirm-delete-btn').addEventListener('click', async () => {
+            try {
+                const result = await sendJson('/api/issues/' + deletingId, 'DELETE');
+                closeConfirm();
+                if (!result.ok) { showSnackbar(result.data.error || 'Could not delete'); return; }
+                showSnackbar('Report deleted');
+                loadIssues();
+            } catch (err) {
+                closeConfirm();
+                showSnackbar('Could not reach the server');
+            }
+        });
+
+        reportScrim.addEventListener('click', (e) => { if (e.target === reportScrim) closeReportDialog(); });
+        confirmScrim.addEventListener('click', (e) => { if (e.target === confirmScrim) closeConfirm(); });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') { closeReportDialog(); closeConfirm(); }
+        });
+
+        // ---------- Start ----------
+
+        loadAuth().then(() => {
+            updateFilterButtons();
+            loadIssues();
+        });
+    </script>
+</body>
+
+</html>

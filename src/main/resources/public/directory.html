@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Waypoint - Rajalakshmi Engineering College</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:400,500,700">
+    <link rel="stylesheet" href="/style.css">
+</head>
+
+<body class="has-tabs"></body>
+
+<header class="app-bar">
+    <span class="title"><a href="/">Waypoint</a></span>
+    <span class="subtitle">Rajalakshmi Engineering College</span>
+    <span class="spacer"></span>
+    <span id="auth-area"></span>
+</header>
+<nav class="tabs-bar static">
+    <div class="tabs-inner">
+        <a class="tab" href="/">All</a>
+        <a class="tab" href="/?board=DISCUSSION">Discussion</a>
+        <a class="tab" href="/?board=STUDY_MATERIAL">Study material</a>
+        <a class="tab" href="/?board=QUERY">Queries</a>
+        <a class="tab" href="/issues.html">Issues</a>
+        <a class="tab active" href="/directory.html">Directory</a>
+    </div>
+</nav>
+
+<main>
+    <h1 class="page-title">Campus Directory</h1>
+    <p class="page-sub">Find buildings, rooms and labs across the campus.</p>
+
+    <div class="card filter-card">
+        <div class="field">
+            <label for="search">Search</label>
+            <input type="text" id="search" autocomplete="off">
+        </div>
+        <div class="field">
+            <label for="category">Category</label>
+            <select id="category">
+                <option value="">All</option>
+                <option value="Building">Building</option>
+                <option value="Room">Room</option>
+                <option value="Lab">Lab</option>
+            </select>
+        </div>
+    </div>
+
+    <div class="result-count" id="count"></div>
+    <div id="results"></div>
+</main>
+
+<!-- Floating add button (admins only) -->
+<button class="fab" id="fab" title="Add location">+</button>
+
+<!-- Add / edit dialog -->
+<div class="scrim" id="form-scrim">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+        <h2 class="dialog-title" id="dialog-title">Add location</h2>
+        <form id="location-form" novalidate>
+            <div class="field">
+                <label for="f-name">Name</label>
+                <input type="text" id="f-name" maxlength="150">
+            </div>
+            <div class="field">
+                <label for="f-building">Building</label>
+                <input type="text" id="f-building" maxlength="100" list="building-list" autocomplete="off">
+                <datalist id="building-list"></datalist>
+            </div>
+            <div class="field">
+                <label for="f-category">Category</label>
+                <select id="f-category">
+                    <option value="Building">Building</option>
+                    <option value="Room" selected>Room</option>
+                    <option value="Lab">Lab</option>
+                </select>
+            </div>
+            <div class="field">
+                <label for="f-room">Room number (optional)</label>
+                <input type="text" id="f-room" maxlength="30">
+            </div>
+            <div class="field">
+                <label for="f-floor">Floor (optional)</label>
+                <input type="text" id="f-floor" maxlength="30">
+            </div>
+            <div class="field">
+                <label for="f-description">Description (optional)</label>
+                <input type="text" id="f-description">
+            </div>
+            <div class="form-error" id="form-error"></div>
+            <div class="dialog-actions">
+                <button type="button" class="btn-flat on-surface" id="cancel-btn">Cancel</button>
+                <button type="submit" class="btn-flat on-surface" id="save-btn">Save</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Delete confirmation dialog -->
+<div class="scrim" id="delete-scrim">
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+        <h2 class="dialog-title" id="delete-title">Delete location?</h2>
+        <p class="dialog-text" id="delete-text"></p>
+        <div class="form-error" id="delete-error"></div>
+        <div class="dialog-actions">
+            <button type="button" class="btn-flat on-surface" id="delete-cancel-btn">Cancel</button>
+            <button type="button" class="btn-flat danger" id="delete-confirm-btn">Delete</button>
+        </div>
+    </div>
+</div>
+
+<script src="/motion.js"></script>
+<script src="/auth.js"></script>
+<script>
+    const searchBox = document.getElementById('search');
+    const categoryBox = document.getElementById('category');
+    const resultsDiv = document.getElementById('results');
+    const countDiv = document.getElementById('count');
+
+    let locationsById = {};     // id -> location, filled on every render
+    let editingId = null;       // null means the dialog is adding a new location
+    let deletingId = null;
+
+    function isAdmin() {
+        return window.currentUser && window.currentUser.role === 'ADMIN';
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text == null ? '' : text;
+        return div.innerHTML;
+    }
+
+    // ---------- Loading and showing the directory ----------
+
+    async function loadLocations() {
+        const params = new URLSearchParams();
+        if (searchBox.value.trim()) params.set('search', searchBox.value.trim());
+        if (categoryBox.value) params.set('category', categoryBox.value);
+
+        try {
+            const response = await fetch('/api/locations?' + params.toString());
+            if (!response.ok) throw new Error('Server returned ' + response.status);
+            render(await response.json());
+        } catch (err) {
+            countDiv.textContent = '';
+            resultsDiv.innerHTML = '<div class="error">Could not load locations: ' + escapeHtml(err.message) + '</div>';
+        }
+    }
+
+    function groupByBuilding(locations) {
+        const groups = {};
+        locations.forEach(loc => {
+            if (!groups[loc.building]) groups[loc.building] = [];
+            groups[loc.building].push(loc);
+        });
+        return groups;
+    }
+
+    function actionButtons(id) {
+        return '<button class="btn-flat on-surface small" data-action="edit" data-id="' + id + '">Edit</button>'
+            + '<button class="btn-flat danger small" data-action="delete" data-id="' + id + '">Delete</button>';
+    }
+
+    function render(locations) {
+        locationsById = {};
+        locations.forEach(loc => { locationsById[loc.id] = loc; });
+
+        countDiv.textContent = locations.length + ' result' + (locations.length === 1 ? '' : 's');
+
+        if (locations.length === 0) {
+            resultsDiv.innerHTML = '<div class="empty">No locations match your search.</div>';
+            return;
+        }
+
+        const admin = isAdmin();
+        const groups = groupByBuilding(locations);
+        let html = '';
+
+        Object.keys(groups).forEach(building => {
+            // The building's own entry is shown in the header, so leave it out of the list rows
+            const buildingEntry = groups[building].find(loc => loc.name === building);
+            const rows = groups[building].filter(loc => loc.name !== building);
+
+            html += '<div class="card">';
+            html += '<div class="card-header"><h2>' + escapeHtml(building) + '</h2><div class="row-right">';
+            html += '<span class="count">' + (rows.length > 0 ? rows.length + ' listed' : (buildingEntry ? 'Building' : '')) + '</span>';
+            if (admin && buildingEntry) html += actionButtons(buildingEntry.id);
+            html += '</div></div>';
+
+            if (rows.length === 0) {
+                html += '<div class="list-row"><div class="secondary">No rooms listed yet</div></div>';
+            }
+
+            rows.forEach(loc => {
+                const details = [];
+                if (loc.roomNumber) details.push('Room ' + loc.roomNumber);
+                if (loc.floor) details.push('Floor ' + loc.floor);
+                if (loc.description) details.push(loc.description);
+
+                html += '<div class="list-row"><div>';
+                html += '<div class="primary">' + escapeHtml(loc.name) + '</div>';
+                if (details.length) html += '<div class="secondary">' + escapeHtml(details.join(' \u00b7 ')) + '</div>';
+                html += '</div><div class="row-right"><div class="category">' + escapeHtml(loc.category) + '</div>';
+                if (admin) html += actionButtons(loc.id);
+                html += '</div></div>';
+            });
+
+            html += '</div>';
+        });
+
+        resultsDiv.innerHTML = html;
+    }
+
+    // ---------- Add / edit dialog ----------
+
+    const formScrim = document.getElementById('form-scrim');
+    const formError = document.getElementById('form-error');
+
+    async function fillBuildingSuggestions() {
+        try {
+            const response = await fetch('/api/locations');
+            if (!response.ok) return;
+            const all = await response.json();
+            const names = [...new Set(all.map(loc => loc.building))].sort();
+            document.getElementById('building-list').innerHTML =
+                names.map(n => '<option value="' + escapeHtml(n) + '">').join('');
+        } catch (err) { /* suggestions are optional */ }
+    }
+
+    function openForm(loc) {
+        editingId = loc ? loc.id : null;
+        document.getElementById('dialog-title').textContent = loc ? 'Edit location' : 'Add location';
+        document.getElementById('f-name').value = loc ? loc.name : '';
+        document.getElementById('f-building').value = loc ? loc.building : '';
+        document.getElementById('f-category').value = loc ? loc.category : 'Room';
+        document.getElementById('f-room').value = loc && loc.roomNumber ? loc.roomNumber : '';
+        document.getElementById('f-floor').value = loc && loc.floor ? loc.floor : '';
+        document.getElementById('f-description').value = loc && loc.description ? loc.description : '';
+        formError.textContent = '';
+        formScrim.classList.add('open');
+        document.getElementById('f-name').focus();
+        fillBuildingSuggestions();
+    }
+
+    function closeForm() {
+        formScrim.classList.remove('open');
+    }
+
+    document.getElementById('location-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        formError.textContent = '';
+
+        const payload = {
+            name: document.getElementById('f-name').value,
+            building: document.getElementById('f-building').value,
+            category: document.getElementById('f-category').value,
+            roomNumber: document.getElementById('f-room').value,
+            floor: document.getElementById('f-floor').value,
+            description: document.getElementById('f-description').value
+        };
+
+        const url = editingId ? '/api/locations/' + editingId : '/api/locations';
+        const method = editingId ? 'PUT' : 'POST';
+
+        try {
+            const response = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const data = await response.json();
+            if (response.ok) {
+                closeForm();
+                loadLocations();
+            } else {
+                formError.textContent = data.error || 'Something went wrong';
+            }
+        } catch (err) {
+            formError.textContent = 'Could not reach the server';
+        }
+    });
+
+    document.getElementById('cancel-btn').addEventListener('click', closeForm);
+    document.getElementById('fab').addEventListener('click', () => openForm(null));
+
+    // ---------- Delete dialog ----------
+
+    const deleteScrim = document.getElementById('delete-scrim');
+    const deleteError = document.getElementById('delete-error');
+
+    function openDelete(loc) {
+        deletingId = loc.id;
+        document.getElementById('delete-text').textContent =
+            'Delete "' + loc.name + '" from ' + loc.building + '? This cannot be undone.';
+        deleteError.textContent = '';
+        deleteScrim.classList.add('open');
+    }
+
+    function closeDelete() {
+        deleteScrim.classList.remove('open');
+    }
+
+    document.getElementById('delete-confirm-btn').addEventListener('click', async () => {
+        deleteError.textContent = '';
+        try {
+            const response = await fetch('/api/locations/' + deletingId, { method: 'DELETE' });
+            const data = await response.json();
+            if (response.ok) {
+                closeDelete();
+                loadLocations();
+            } else {
+                deleteError.textContent = data.error || 'Something went wrong';
+            }
+        } catch (err) {
+            deleteError.textContent = 'Could not reach the server';
+        }
+    });
+
+    document.getElementById('delete-cancel-btn').addEventListener('click', closeDelete);
+
+    // ---------- Wiring ----------
+
+    // One click listener for all Edit / Delete buttons inside the results
+    resultsDiv.addEventListener('click', (event) => {
+        const button = event.target.closest('button[data-action]');
+        if (!button) return;
+        const loc = locationsById[button.dataset.id];
+        if (!loc) return;
+        if (button.dataset.action === 'edit') openForm(loc);
+        else openDelete(loc);
+    });
+
+    // Clicking the dark area outside a dialog closes it; so does the Escape key
+    formScrim.addEventListener('click', (e) => { if (e.target === formScrim) closeForm(); });
+    deleteScrim.addEventListener('click', (e) => { if (e.target === deleteScrim) closeDelete(); });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { closeForm(); closeDelete(); }
+    });
+
+    let timer;
+    searchBox.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(loadLocations, 300);
+    });
+    categoryBox.addEventListener('change', loadLocations);
+
+    // Find out who is logged in first, so the admin buttons are drawn correctly
+    loadAuth().then(() => {
+        if (isAdmin()) document.getElementById('fab').classList.add('visible');
+        loadLocations();
+    });
+</script>
+</body>
+
+</html>
