@@ -10,9 +10,15 @@ public class Main {
 
     public static void main(String[] args) {
 
-        Javalin app = Javalin.create(config -> {
-            config.staticFiles.add("/public");
-        }).start(7070);
+        
+int port = Integer.parseInt(
+    System.getenv().getOrDefault("PORT", "7070")
+);
+
+Javalin app = Javalin.create(config -> {
+    config.staticFiles.add("/public");
+}).start(port);
+
 
         app.get("/api/health", ctx -> {
             ctx.json(Map.of(
